@@ -1,3 +1,6 @@
-FROM tomcat:8.0.20-jre8
-
-COPY target/01-maven-web-app*.war /usr/local/tomcat/webapps/maven-web-app.war
+FROM tomcat:9
+RUN apt update
+WORKDIR /usr/local/tomcat
+ADD target/*.war webapps/
+EXPOSE 8080
+CMD ["catalina.sh", "run"]
