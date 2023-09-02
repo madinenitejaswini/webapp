@@ -1,54 +1,58 @@
-node{
-    
-    stage('Clone repo'){
-        git credentialsId: 'GIT-Credentials', url: 'https://github.com/ashokitschool/maven-web-app.git'
+pipeline {
+    agent any
+    tools {
+        maven 'maven-3.9.4'
     }
-    
-    stage('Maven Build'){
-        def mavenHome = tool name: "Maven-3.8.6", type: "maven"
-        def mavenCMD = "${mavenHome}/bin/mvn"
-        sh "${mavenCMD} clean package"
-    }
-    
-    stage('SonarQube analysis') {       
-        withSonarQubeEnv('Sonar-Server-7.8') {
-       	sh "mvn sonar:sonar"    	
-    }
-        
-    stage('upload war to nexus'){
-	steps{
-		nexusArtifactUploader artifacts: [	
-			[
-				artifactId: '01-maven-web-app',
-				classifier: '',
-				file: 'target/01-maven-web-app.war',
-				type: war		
-			]	
-		],
-		credentialsId: 'nexus3',
-		groupId: 'in.ashokit',
-		nexusUrl: '',
-		protocol: 'http',
-		repository: 'ashokit-release'
-		version: '1.0.0'
-	}
-}
-    
-    stage('Build Image'){
-        sh 'docker build -t ashokit/mavenwebapp .'
-    }
-    
-    stage('Push Image'){
-        withCredentials([string(credentialsId: 'DOCKER-CREDENTIALS', variable: 'DOCKER_CREDENTIALS')]) {
-            sh 'docker login -u ashokit -p ${DOCKER_CREDENTIALS}'
+    stages {
+        stage('Clone the repo from github') {
+            steps {
+                git branch: 'master', credentialsId: 'github-credentials', url: 'https://github.com/madinenitejaswini/webapp.git'
+            }
         }
-        sh 'docker push ashokit/mavenwebapp'
+        stage('Build the code') {
+            steps {
+                sh 'mvn clean install'
+            }
+        }
+        stage('Static code analysis using Sonarqube') {
+            steps {
+                withSonarQubeEnv('sonar-9.9.1') {
+                sh 'mvn sonar:sonar'
+                }
+            }            
+        }
+        stage('Build Docker Image and tag it to aws ecr') {
+            steps {
+                sh '''
+                docker build . -t webapp:$BUILD_NUMBER
+                docker tag webapp:$BUILD_NUMBER 361661913055.dkr.ecr.ap-south-1.amazonaws.com/webapp:$BUILD_NUMBER
+                '''  
+            }
+        }
+	stage('Push Docker Image to AWS ECR') {
+            steps {
+                 // configure AWS credentials
+                withAWS(credentials: 'aws-credentials', region: 'ap-south-1') {
+                    sh '''
+                    aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 361661913055.dkr.ecr.ap-south-1.amazonaws.com
+                    docker push 361661913055.dkr.ecr.ap-south-1.amazonaws.com/webapp:$BUILD_NUMBER
+                    '''
+                }
+            }
+        }
+        stage('Deployto AWS EKS') {
+            steps {
+               withAWS(credentials: 'aws-credentials', region: 'ap-south-1') {
+
+                   // Connect to the EKS cluster
+                   // Apply yaml file to eks cluster
+                    sh '''
+                     aws eks update-kubeconfig --name dev-cluster --region ap-south-1 
+                     kubectl apply -f .
+                     kubectl set image deployment/webapp webapp=361661913055.dkr.ecr.ap-south-1.amazonaws.com/webapp:$BUILD_NUMBER
+                    '''
+                }
+            }
+        }
     }
-    
-    stage('Deploy App'){
-        kubernetesDeploy(
-            configs: 'maven-web-app-deploy.yml',
-            kubeconfigId: 'Kube-Config'
-        )
-    }    
 }
